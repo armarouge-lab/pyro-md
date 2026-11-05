@@ -5,91 +5,248 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-#define VERSION "0.1.0"
+#define VERSION "0.2.3"
 #define MAX_PATH_LENGTH 1024
+#define HEADER_BUFFER_SIZE 16
 
-static void show_usage(void) { fprintf(stderr, "usage: pyro ~/path/to/file...\n"); exit(EXIT_FAILURE); }
+static void show_usage(void) {
+    fprintf(stderr, "usage: pyro ~/path/to/file\n");
+    exit(EXIT_FAILURE);
+}
+
 static void show_help(void) {
-    printf("Usage: pyro ~/path/to/file...\n\nOpens FILE with the appropriate viewer:\n  video/*  -> mpv\n  image/*  -> imv\n  PDF      -> zathura\n  others   -> xdg-open\n\nOptions:\n  -h, --help    show this help and exit\n  --version     show version and exit\n");
+    printf("Usage: pyro ~/path/to/file\n\n");
+    printf("Opens FILE with the appropriate viewer:\n");
+    printf("  video/*  -> mpv (borderless)\n");
+    printf("  audio/*  -> mpv (windowed UI)\n");
+    printf("  image/*  -> imv\n");
+    printf("  PDF      -> zathura\n");
+    printf("  others   -> xdg-open\n\n");
+    printf("Options:\n");
+    printf("  -h, --help    show this help and exit\n");
+    printf("  --version     show version and exit\n");
     exit(EXIT_SUCCESS);
 }
 
 static const char *detect_mime_type(const char *file_path) {
-    unsigned char header_buffer[16];
+    unsigned char header_buffer[HEADER_BUFFER_SIZE];
     int file_descriptor = open(file_path, O_RDONLY);
-    if (file_descriptor < 0) return "application/octet-stream";
+    
+    if (file_descriptor < 0) {
+        return "application/octet-stream";
+    }
+    
     ssize_t bytes_read = read(file_descriptor, header_buffer, sizeof(header_buffer));
     close(file_descriptor);
-    if (bytes_read < 4) return "application/octet-stream";
-    if (bytes_read >= 3 && header_buffer[0] == 0xFF && header_buffer[1] == 0xD8 && header_buffer[2] == 0xFF) return "image/jpeg";
-    if (bytes_read >= 8 && memcmp(header_buffer, "\x89PNG\r\n\x1a\n", 8) == 0) return "image/png";
-    if (memcmp(header_buffer, "GIF8", 4) == 0) return "image/gif";
-    if (memcmp(header_buffer, "%PDF", 4) == 0) return "application/pdf";
-    if (bytes_read >= 8 && memcmp(header_buffer + 4, "ftyp", 4) == 0) return "video/mp4";
+    
+    if (bytes_read < 4) {
+        return "application/octet-stream";
+    }
+
+    /* --- Imagens --- */
+    if (bytes_read >= 3 && header_buffer[0] == 0xFF && header_buffer[1] == 0xD8 && header_buffer[2] == 0xFF) {
+        return "image/jpeg";
+    }
+    if (bytes_read >= 8 && memcmp(header_buffer, "\x89PNG\r\n\x1a\n", 8) == 0) {
+        return "image/png";
+    }
+    if (memcmp(header_buffer, "GIF8", 4) == 0) {
+        return "image/gif";
+    }
+    if (bytes_read >= 12 && memcmp(header_buffer, "RIFF", 4) == 0 && memcmp(header_buffer + 8, "WEBP", 4) == 0) {
+        return "image/webp";
+    }
+    if (memcmp(header_buffer, "BM", 2) == 0) {
+        return "image/bmp";
+    }
+    if ((memcmp(header_buffer, "II*\0", 4) == 0) || (memcmp(header_buffer, "MM\0*", 4) == 0)) {
+        return "image/tiff";
+    }
+    if (bytes_read >= 4 && header_buffer[0] == 0x00 && header_buffer[1] == 0x00 && header_buffer[2] == 0x01 && header_buffer[3] == 0x00) {
+        return "image/x-icon";
+    }
+
+    /* --- Áudio --- */
+    if (bytes_read >= 3 && memcmp(header_buffer, "ID3", 3) == 0) {
+        return "audio/mpeg";
+    }
+    if (bytes_read >= 2 && header_buffer[0] == 0xFF && (header_buffer[1] & 0xE0) == 0xE0) {
+        return "audio/mpeg";
+    }
+    if (memcmp(header_buffer, "fLaC", 4) == 0) {
+        return "audio/flac";
+    }
+    if (memcmp(header_buffer, "OggS", 4) == 0) {
+        return "audio/ogg";
+    }
+    if (bytes_read >= 12 && memcmp(header_buffer, "RIFF", 4) == 0 && memcmp(header_buffer + 8, "WAVE", 4) == 0) {
+        return "audio/wav";
+    }
+
+    /* --- Vídeo --- */
+    if (bytes_read >= 4 && memcmp(header_buffer, "\x1A\x45\xDF\xA3", 4) == 0) {
+        return "video/x-matroska";
+    }
+    if (bytes_read >= 12 && memcmp(header_buffer, "RIFF", 4) == 0 && memcmp(header_buffer + 8, "AVI ", 4) == 0) {
+        return "video/x-msvideo";
+    }
+    if (bytes_read >= 8 && memcmp(header_buffer + 4, "ftyp", 4) == 0) {
+        return "video/mp4";
+    }
+
+    /* --- Documentos --- */
+    if (memcmp(header_buffer, "%PDF", 4) == 0) {
+        return "application/pdf";
+    }
+
     return "application/octet-stream";
 }
 
 static int command_exists(const char *command_name) {
     const char *path_environment = getenv("PATH");
-    if (!path_environment) return 0;
+    if (!path_environment) {
+        return 0;
+    }
+
     char candidate_path[MAX_PATH_LENGTH];
     const char *path_iterator = path_environment;
+
     while (*path_iterator) {
         const char *colon_position = strchr(path_iterator, ':');
         size_t directory_length = colon_position ? (size_t)(colon_position - path_iterator) : strlen(path_iterator);
+
         if (directory_length > 0 && directory_length + 1 + strlen(command_name) + 1 < sizeof(candidate_path)) {
             snprintf(candidate_path, sizeof(candidate_path), "%.*s/%s", (int)directory_length, path_iterator, command_name);
-            if (access(candidate_path, X_OK) == 0) return 1;
+            if (access(candidate_path, X_OK) == 0) {
+                return 1;
+            }
         }
-        if (!colon_position) break;
+        
+        if (!colon_position) {
+            break;
+        }
         path_iterator = colon_position + 1;
     }
     return 0;
 }
 
 static int execute_viewer(const char *mime_type, const char *target_path) {
+    
+    /* --- Vídeo --- */
     if (strncmp(mime_type, "video/", 6) == 0) {
-        if (!command_exists("mpv")) { fprintf(stderr, "pyro: mpv not found\n"); return EXIT_FAILURE; }
-        printf("Opening video: %s\n", target_path); fflush(stdout);
+        if (!command_exists("mpv")) {
+            fprintf(stderr, "pyro: mpv not found (install with: apt install mpv)\n");
+            return EXIT_FAILURE;
+        }
+        printf("Opening video: %s\n", target_path);
+        fflush(stdout);
         execlp("mpv", "mpv", "--no-border", "--really-quiet", target_path, (char *)NULL);
+        perror("pyro: mpv");
         return EXIT_FAILURE;
     }
+
+    /* --- Áudio (com janela forçada) --- */
+    if (strncmp(mime_type, "audio/", 6) == 0) {
+        if (!command_exists("mpv")) {
+            fprintf(stderr, "pyro: mpv not found (install with: apt install mpv)\n");
+            return EXIT_FAILURE;
+        }
+        printf("Opening audio: %s\n", target_path);
+        fflush(stdout);
+        execlp("mpv", "mpv", "--force-window", "--really-quiet", target_path, (char *)NULL);
+        perror("pyro: mpv");
+        return EXIT_FAILURE;
+    }
+
+    /* --- GIFs --- */
     if (strcmp(mime_type, "image/gif") == 0) {
-        if (!command_exists("mpv")) { fprintf(stderr, "pyro: mpv not found\n"); return EXIT_FAILURE; }
-        printf("Opening GIF: %s\n", target_path); fflush(stdout);
+        if (!command_exists("mpv")) {
+            fprintf(stderr, "pyro: mpv not found (install with: apt install mpv)\n");
+            return EXIT_FAILURE;
+        }
+        printf("Opening GIF: %s\n", target_path);
+        fflush(stdout);
         execlp("mpv", "mpv", "--loop", "--no-border", target_path, (char *)NULL);
+        perror("pyro: mpv");
         return EXIT_FAILURE;
     }
+
+    /* --- Imagens Estáticas --- */
     if (strncmp(mime_type, "image/", 6) == 0) {
         const char *viewer_name = NULL;
-        if (command_exists("imv")) viewer_name = "imv";
-        else if (command_exists("imv-x11")) viewer_name = "imv-x11";
-        else if (command_exists("imv-wayland")) viewer_name = "imv-wayland";
-        if (!viewer_name) { fprintf(stderr, "pyro: imv not found\n"); return EXIT_FAILURE; }
-        printf("Opening image: %s\n", target_path); fflush(stdout);
+        
+        if (command_exists("imv")) {
+            viewer_name = "imv";
+        } else if (command_exists("imv-x11")) {
+            viewer_name = "imv-x11";
+        } else if (command_exists("imv-wayland")) {
+            viewer_name = "imv-wayland";
+        }
+
+        if (!viewer_name) {
+            fprintf(stderr, "pyro: imv not found (install with: apt install imv)\n");
+            return EXIT_FAILURE;
+        }
+        
+        printf("Opening image: %s\n", target_path);
+        fflush(stdout);
         execlp(viewer_name, viewer_name, target_path, (char *)NULL);
+        perror("pyro: imv");
         return EXIT_FAILURE;
     }
+
+    /* --- PDFs --- */
     if (strcmp(mime_type, "application/pdf") == 0) {
-        if (!command_exists("zathura")) { fprintf(stderr, "pyro: zathura not found\n"); return EXIT_FAILURE; }
-        printf("Opening PDF: %s\n", target_path); fflush(stdout);
+        if (!command_exists("zathura")) {
+            fprintf(stderr, "pyro: zathura not found (install with: apt install zathura)\n");
+            return EXIT_FAILURE;
+        }
+        printf("Opening PDF: %s\n", target_path);
+        fflush(stdout);
         execlp("zathura", "zathura", target_path, (char *)NULL);
+        perror("pyro: zathura");
         return EXIT_FAILURE;
     }
-    if (!command_exists("xdg-open")) { fprintf(stderr, "pyro: xdg-open not found\n"); return EXIT_FAILURE; }
-    printf("Opening with xdg-open: %s\n", target_path); fflush(stdout);
+
+    /* --- Fallback --- */
+    if (!command_exists("xdg-open")) {
+        fprintf(stderr, "pyro: xdg-open not found\n");
+        return EXIT_FAILURE;
+    }
+    printf("Opening with xdg-open: %s\n", target_path);
+    fflush(stdout);
     execlp("xdg-open", "xdg-open", target_path, (char *)NULL);
+    perror("pyro: xdg-open");
     return EXIT_FAILURE;
 }
 
 int main(int argc, char *argv[]) {
-    if (argc < 2) show_usage();
-    if (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0) show_help();
-    if (strcmp(argv[1], "--version") == 0) { printf("pyro %s\n", VERSION); return EXIT_SUCCESS; }
+    if (argc < 2) {
+        show_usage();
+    }
+
+    if (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0) {
+        show_help();
+    }
+    
+    if (strcmp(argv[1], "--version") == 0) {
+        printf("pyro %s\n", VERSION);
+        return EXIT_SUCCESS;
+    }
+
     const char *target_path = argv[1];
     struct stat file_status;
-    if (stat(target_path, &file_status) != 0) { fprintf(stderr, "pyro: '%s' does not exist\n", target_path); return EXIT_FAILURE; }
-    if (!S_ISREG(file_status.st_mode)) { fprintf(stderr, "pyro: '%s' is not a regular file\n", target_path); return EXIT_FAILURE; }
+
+    if (stat(target_path, &file_status) != 0) {
+        fprintf(stderr, "pyro: '%s' does not exist\n", target_path);
+        return EXIT_FAILURE;
+    }
+    
+    if (!S_ISREG(file_status.st_mode)) {
+        fprintf(stderr, "pyro: '%s' is not a regular file\n", target_path);
+        return EXIT_FAILURE;
+    }
+
     const char *detected_mime_type = detect_mime_type(target_path);
     return execute_viewer(detected_mime_type, target_path);
 }
