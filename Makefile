@@ -1,5 +1,5 @@
-CC     = cc
-CFLAGS = -std=c17 -Wall -Wextra -O2 -g
+CC     = gcc
+CFLAGS = -std=c17 -Wall -Wextra -Werror -O2 -g
 TARGET = pyro
 SRC    = src/pyro.c
 
