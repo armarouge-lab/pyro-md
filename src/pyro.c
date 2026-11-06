@@ -6,10 +6,14 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <ctype.h>
+#include <libgen.h>
 
-#define VERSION "0.3.2"
+#define VERSION "0.4.0"
 #define MAX_PATH_LENGTH 1024
 #define HEADER_BUFFER_SIZE 512
+
+#define ICON_PATH_SYSTEM "/usr/local/share/pyro/cd-icon.png"
+#define ICON_PATH_LOCAL "res/cd-icon.png"
 
 static void show_usage(void) {
     fprintf(stderr, "usage: pyro ~/path/to/file\n");
@@ -20,7 +24,7 @@ static void show_help(void) {
     printf("Usage: pyro ~/path/to/file\n\n");
     printf("Opens FILE with the appropriate viewer:\n");
     printf("  video/*  -> mpv\n");
-    printf("  audio/*  -> mpv (spectrum)\n");
+    printf("  audio/*  -> mpv (with CD icon)\n");
     printf("  image/*  -> imv\n");
     printf("  PDF      -> zathura\n");
     printf("  text/*   -> interactive prompt\n");
@@ -155,15 +159,46 @@ static int execute_viewer(const char *mime_type, const char *target_path) {
     if (strncmp(mime_type, "video/", 6) == 0) {
         if (!command_exists("mpv")) return EXIT_FAILURE;
         printf("Opening video: %s\n", target_path); fflush(stdout);
-        execlp("mpv", "mpv", "--no-border", "--really-quiet", target_path, (char *)NULL);
+        execlp("mpv", "mpv", "--no-border", "--really-quiet", "--ao=alsa", target_path, (char *)NULL);
         return EXIT_FAILURE;
     }
     if (strncmp(mime_type, "audio/", 6) == 0) {
         if (!command_exists("mpv")) return EXIT_FAILURE;
-        printf("Opening audio (spectrum): %s\n", target_path); fflush(stdout);
-        execlp("mpv", "mpv", "--force-window", "--really-quiet", 
-               "--lavfi-complex=[aid1]asplit[a1][a2];[a1]showspectrum=s=800x600:mode=combined[vo];[a2]anull[ao]", 
-               target_path, (char *)NULL);
+        printf("Opening audio: %s\n", target_path); fflush(stdout);
+        
+        const char *icon_to_use = NULL;
+        if (access(ICON_PATH_SYSTEM, F_OK) == 0) {
+            icon_to_use = ICON_PATH_SYSTEM;
+        } else if (access(ICON_PATH_LOCAL, F_OK) == 0) {
+            icon_to_use = ICON_PATH_LOCAL;
+        }
+
+        if (icon_to_use) {
+            char path_copy[MAX_PATH_LENGTH];
+            snprintf(path_copy, sizeof(path_copy), "%s", target_path);
+            char *song_name = basename(path_copy);
+
+            char audio_arg[MAX_PATH_LENGTH + 32];
+            snprintf(audio_arg, sizeof(audio_arg), "--audio-file=%s", target_path);
+
+            char title_arg[MAX_PATH_LENGTH + 32];
+            snprintf(title_arg, sizeof(title_arg), "--title=%s", song_name);
+
+            execlp("mpv", "mpv", 
+                   "--force-window=yes", 
+                   "--image-display-duration=inf", 
+                   "--autofit=800x600",
+                   "--panscan=1.0",
+                   "--ao=alsa",
+                   title_arg,
+                   icon_to_use, 
+                   audio_arg, 
+                   "--really-quiet", 
+                   (char *)NULL);
+        } else {
+            execlp("mpv", "mpv", "--force-window=yes", "--ao=alsa", "--really-quiet", target_path, (char *)NULL);
+        }
+        perror("pyro: mpv");
         return EXIT_FAILURE;
     }
     if (strcmp(mime_type, "image/gif") == 0) {

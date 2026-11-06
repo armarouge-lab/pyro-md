@@ -31,7 +31,16 @@ esac
 
 make clean || true
 make
+
+echo "Installing binary and resources..."
 cp pyro /usr/local/bin/pyro
 chmod +x /usr/local/bin/pyro
+
+mkdir -p /usr/local/share/pyro
+if [ -f "res/cd-icon.png" ]; then
+    cp res/cd-icon.png /usr/local/share/pyro/
+else
+    echo "Warning: res/cd-icon.png not found. Audio window will be blank."
+fi
 
 echo "Pyro installed successfully."
