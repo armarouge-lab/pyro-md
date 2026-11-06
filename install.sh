@@ -5,47 +5,63 @@
 set -e
 
 echo "=========================================="
-echo "   Instalando o Pyro (Media Dispatcher)"
+echo "   Installing Pyro (Media Dispatcher)"
 echo "=========================================="
 
-# 1. Instalar dependências de compilação essenciais
-echo "-> Verificando compilador e ferramentas básicas..."
+# 1. Detect package manager
 if command -v apt >/dev/null 2>&1; then
+    PKG_MGR="apt install -y"
     apt update
-    apt install -y build-essential
+    apt install -y build-essential git
 elif command -v pkg >/dev/null 2>&1; then
-    pkg install -y gcc gmake
+    PKG_MGR="pkg install -y"
+    pkg update
+    pkg install -y gcc gmake git
+else
+    echo "Error: Unsupported package manager."
+    exit 1
 fi
 
-# 2. Perguntar sobre os visualizadores recomendados
-printf "Deseja instalar os visualizadores de mídia recomendados (mpv, imv, zathura)? [S/n]: "
-read -r user_response
-user_response=$(echo "$user_response" | tr '[:upper:]' '[:lower:]')
+# 2. Ask for media viewers
+printf "Install recommended media viewers (mpv, imv, zathura)? [S/n]: "
+read -r response_media
+response_media=$(echo "$response_media" | tr '[:upper:]' '[:lower:]')
 
-case "$user_response" in
+case "$response_media" in
     ""|s|y|sim|yes)
-        echo "-> Instalando visualizadores..."
-        if command -v apt >/dev/null 2>&1; then
-            apt install -y mpv imv zathura
-        elif command -v pkg >/dev/null 2>&1; then
-            pkg install -y mpv imv zathura
-        fi
+        echo "-> Installing media viewers..."
+        $PKG_MGR mpv imv zathura
         ;;
     *)
-        echo "-> Pulando visualizadores. (O Pyro avisará se eles faltarem ao abrir arquivos)."
+        echo "-> Skipping media viewers."
         ;;
 esac
 
-# 3. Compilar e instalar
-echo "-> Compilando o Pyro..."
+# 3. Ask for text editor (Neovim)
+printf "Install Neovim for text/code files? [S/n]: "
+read -r response_editor
+response_editor=$(echo "$response_editor" | tr '[:upper:]' '[:lower:]')
+
+case "$response_editor" in
+    ""|s|y|sim|yes)
+        echo "-> Installing Neovim..."
+        $PKG_MGR neovim
+        ;;
+    *)
+        echo "-> Skipping Neovim. Pyro will fallback to vim or custom editor."
+        ;;
+esac
+
+# 4. Compile and install
+echo "-> Compiling Pyro..."
 make clean || true
 make
 
-echo "-> Instalando o binário no sistema..."
+echo "-> Installing binary to /usr/local/bin..."
 cp pyro /usr/local/bin/pyro
 chmod +x /usr/local/bin/pyro
 
 echo "=========================================="
-echo "Pyro instalado com sucesso!"
-echo "Teste com: pyro ~/caminho/para/arquivo"
+echo "Pyro installed successfully!"
+echo "Test with: pyro ~/path/to/file"
 echo "=========================================="
